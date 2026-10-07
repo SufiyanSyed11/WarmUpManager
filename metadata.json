@@ -1,0 +1,7 @@
+{
+  "name": "WarmUp Manager",
+  "description": "Android account manager and warmup assistant for TikTok, Instagram, and YouTube accounts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

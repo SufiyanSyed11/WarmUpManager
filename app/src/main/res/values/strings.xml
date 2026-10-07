@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WarmUp Manager</string>
+    <string name="accessibility_service_description">WarmUp Manager Assist Engine simulates randomized human-like scrolling, viewing durations, and engagement for your owned social accounts with anti-detection heuristics and safety pause.</string>
+</resources>
