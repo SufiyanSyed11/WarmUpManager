@@ -1,7 +1,12 @@
 package com.warmup.manager.ui.screens.assist
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -21,30 +26,39 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sparkles
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -57,6 +71,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -74,8 +89,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationCompat
+import com.warmup.manager.data.model.AccountEntity
+import com.warmup.manager.data.model.AccountWarmUpCalculation
 import com.warmup.manager.data.model.AssistSettings
+import com.warmup.manager.data.model.Platform
 import com.warmup.manager.data.model.SessionMood
+import com.warmup.manager.data.model.WarmUpSessionEntity
 import com.warmup.manager.service.AssistMonitorService
 import com.warmup.manager.service.WarmUpAccessibilityService
 import com.warmup.manager.ui.theme.DarkBackground
@@ -86,8 +106,11 @@ import com.warmup.manager.ui.theme.StatusOrange
 import com.warmup.manager.ui.theme.TextMuted
 import com.warmup.manager.ui.theme.TextPrimary
 import com.warmup.manager.ui.theme.TextSecondary
+import com.warmup.manager.util.PlatformLauncher
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 import kotlin.random.Random
@@ -106,12 +129,47 @@ enum class LogType {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AssistEngineScreen(
+    accounts: List<AccountEntity> = emptyList(),
+    calculations: List<AccountWarmUpCalculation> = emptyList(),
+    activeTimerAccount: AccountEntity? = null,
+    elapsedSeconds: Int = 0,
+    onStartRealSession: (AccountEntity) -> Unit = {},
+    onStopRealSession: () -> Unit = {},
+    onUpdateAccount: (AccountEntity) -> Unit = {},
     currentSettings: AssistSettings,
     onSaveSettings: (AssistSettings) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
 
+    // Observe reactive safety alert states from AssistMonitorService
+    val safetyHaltedState by AssistMonitorService.safetyHaltedReason.collectAsState()
+
+    // Real Device Session Assistant Selection State
+    var selectedPlatform by remember { mutableStateOf(Platform.TIKTOK) }
+    val platformAccounts = remember(accounts, selectedPlatform) {
+        accounts.filter { it.platform == selectedPlatform }
+    }
+
+    var selectedAccountId by remember(platformAccounts, activeTimerAccount) {
+        val initialId = activeTimerAccount?.id
+            ?: platformAccounts.firstOrNull()?.id
+            ?: accounts.firstOrNull()?.id
+            ?: 0L
+        mutableStateOf(initialId)
+    }
+
+    val selectedAccount = remember(accounts, selectedAccountId) {
+        accounts.find { it.id == selectedAccountId } ?: platformAccounts.firstOrNull() ?: accounts.firstOrNull()
+    }
+
+    val selectedCalculation = remember(calculations, selectedAccount) {
+        selectedAccount?.let { acc -> calculations.find { it.account.id == acc.id } }
+    }
+
+    val isRunningThisAccount = activeTimerAccount != null && selectedAccount != null && activeTimerAccount.id == selectedAccount.id
+
+    // Assist Master Enable Switch
     var isEnabled by remember { mutableStateOf(currentSettings.isEnabled) }
     var mood by remember { mutableStateOf(currentSettings.sessionMood) }
 
@@ -127,7 +185,6 @@ fun AssistEngineScreen(
     var dailySaveCap by remember { mutableIntStateOf(currentSettings.dailySaveCap) }
     var nicheKeywordsText by remember { mutableStateOf(currentSettings.nicheKeywords.joinToString(", ")) }
 
-    // Assemble dynamic live settings object
     val liveSettings = remember(
         isEnabled, mood, instantSkip, quickGlance, partialWatch, fullWatch, rewatch,
         likeProb, saveProb, dailyLikeCap, dailySaveCap, nicheKeywordsText
@@ -153,14 +210,14 @@ fun AssistEngineScreen(
         liveSettings.calculateExpected20MinMetrics()
     }
 
-    // Behavioral Simulator State
+    // Local Behavioral Simulator State (isolated simulation as required)
     var isSimulatorRunning by remember { mutableStateOf(false) }
     var simSafetyHalted by remember { mutableStateOf<String?>(null) }
     var simVideoIndex by remember { mutableIntStateOf(1) }
     var simCurrentReaction by remember { mutableStateOf("Partial Watch (~25%)") }
     var simWatchSeconds by remember { mutableIntStateOf(0) }
     var simTargetSeconds by remember { mutableIntStateOf(12) }
-    var simLastAction by remember { mutableStateOf("Watching current video in TikTok feed") }
+    var simLastAction by remember { mutableStateOf("Watching current video in simulation player") }
     var simSwipeTrajectory by remember { mutableStateOf("Bézier swipe: duration 320ms, curve offset -8px, distance 76% height") }
     var simLikesInSession by remember { mutableIntStateOf(0) }
     var simSavesInSession by remember { mutableIntStateOf(0) }
@@ -171,14 +228,27 @@ fun AssistEngineScreen(
             TelemetryLogEntry(
                 id = "init",
                 time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()),
-                text = "Assist Behavior Engine initialized. Awaiting live feed simulation...",
+                text = "Assist Safety Engine initialized. Ready to observe live session.",
                 type = LogType.INFO
             )
         )
     }
 
-    // Simulator step helper
-    fun triggerNextVideo() {
+    // Sync safety alert from real monitor into telemetry log
+    LaunchedEffect(safetyHaltedState) {
+        safetyHaltedState?.let { reason ->
+            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+            simLogs.add(0, TelemetryLogEntry(
+                id = System.currentTimeMillis().toString(),
+                time = timeStr,
+                text = "SAFETY ALERT: $reason -> Session stopped immediately.",
+                type = LogType.ALERT
+            ))
+        }
+    }
+
+    // Local Simulator Step logic
+    fun triggerNextSimVideo() {
         if (simSafetyHalted != null) return
         val nextIndex = simVideoIndex + 1
         simVideoIndex = nextIndex
@@ -215,46 +285,41 @@ fun AssistEngineScreen(
 
         val speedMs = Random.nextInt(200, 520)
         val curvature = Random.nextInt(-18, 18)
-        simSwipeTrajectory = "Bézier swipe: duration ${speedMs}ms, curve offset ${curvature}px, distance 76% height"
+        simSwipeTrajectory = "Bézier trajectory: duration ${speedMs}ms, curve offset ${curvature}px, distance 76% height"
 
         val moodMult = liveSettings.sessionMood.likeMultiplier
         val currentGap = simVideosSinceAction + 1
         val timeStr = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
 
         if (reaction.contains("Skip")) {
-            val desc = "Swiped away after ${targetSecs}s. (Skip strictly forbids likes)"
+            val desc = "Simulated swipe away after ${targetSecs}s. (Skip forbids likes)"
             simLastAction = desc
             simVideosSinceAction = currentGap
-            simLogs.add(0, TelemetryLogEntry(id = System.currentTimeMillis().toString(), time = timeStr, text = "Video #$nextIndex: $reaction ($targetSecs s) -> $desc", type = LogType.SKIP))
+            simLogs.add(0, TelemetryLogEntry(id = System.currentTimeMillis().toString(), time = timeStr, text = "Sim Video #$nextIndex: $reaction ($targetSecs s) -> $desc", type = LogType.SKIP))
         } else if (isFullOrRewatch && currentGap >= liveSettings.minGapVideos && Random.nextFloat() < (liveSettings.likeProbability * moodMult)) {
             val isDoubleTap = Random.nextBoolean()
             val likeDelay = String.format(Locale.US, "%.1f", Random.nextFloat() * 2f + 1.2f)
-            val isUnlike = Random.nextFloat() < liveSettings.unlikeProbability
-
             simLikesInSession++
             simVideosSinceAction = 0
-            var desc = "Liked via ${if (isDoubleTap) "double-tap" else "heart button"} after ${likeDelay}s delay."
-            if (isUnlike) desc += " (Triggered 1% unlike test!)"
-
+            var desc = "Simulated like (${if (isDoubleTap) "double-tap" else "heart"}) after ${likeDelay}s."
             if (Random.nextFloat() < (liveSettings.saveProbability * 3f)) {
                 simSavesInSession++
-                desc += " * Bookmarked/Saved video."
+                desc += " * Bookmarked."
             }
             simLastAction = desc
-            simLogs.add(0, TelemetryLogEntry(id = System.currentTimeMillis().toString(), time = timeStr, text = "Video #$nextIndex: $reaction -> $desc", type = LogType.LIKE))
+            simLogs.add(0, TelemetryLogEntry(id = System.currentTimeMillis().toString(), time = timeStr, text = "Sim Video #$nextIndex: $reaction -> $desc", type = LogType.LIKE))
         } else {
             simVideosSinceAction = currentGap
-            val desc = "Watched ${targetSecs}s ($reaction). Quiet gap: $currentGap videos."
+            val desc = "Watched ${targetSecs}s ($reaction). Gap: $currentGap videos."
             simLastAction = desc
-            simLogs.add(0, TelemetryLogEntry(id = System.currentTimeMillis().toString(), time = timeStr, text = "Video #$nextIndex: $desc", type = LogType.INFO))
+            simLogs.add(0, TelemetryLogEntry(id = System.currentTimeMillis().toString(), time = timeStr, text = "Sim Video #$nextIndex: $desc", type = LogType.INFO))
         }
 
-        while (simLogs.size > 25) {
+        while (simLogs.size > 30) {
             simLogs.removeAt(simLogs.lastIndex)
         }
     }
 
-    // Simulator clock ticker
     LaunchedEffect(isSimulatorRunning, simSafetyHalted, simTargetSeconds, simVideoIndex) {
         if (!isSimulatorRunning || simSafetyHalted != null) return@LaunchedEffect
         while (isSimulatorRunning && simSafetyHalted == null) {
@@ -263,7 +328,7 @@ fun AssistEngineScreen(
                 simWatchSeconds++
             } else {
                 simWatchSeconds = 0
-                triggerNextVideo()
+                triggerNextSimVideo()
             }
         }
     }
@@ -311,7 +376,7 @@ fun AssistEngineScreen(
                                 }
                             }
                             Text(
-                                text = "Human Behavior Engine & Real-Time Gestures",
+                                text = "Real Session Assistant & Read-Only Safety Monitor",
                                 fontSize = 11.sp,
                                 color = TextSecondary
                             )
@@ -356,47 +421,519 @@ fun AssistEngineScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Header summary banner
+            // =========================================================================
+            // 1. REAL ON-DEVICE SESSION ASSISTANT CONTROLLER
+            // =========================================================================
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                    border = CardDefaults.outlinedCardBorder().copy(brush = Brush.horizontalGradient(listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))))
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = Brush.horizontalGradient(
+                            listOf(Color(0xFF6366F1), Color(0xFF10B981))
+                        )
+                    )
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF6366F1).copy(alpha = 0.2f)),
-                            contentAlignment = Alignment.Center
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Shield,
-                                contentDescription = null,
-                                tint = Color(0xFFA5B4FC),
-                                modifier = Modifier.size(24.dp)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF6366F1).copy(alpha = 0.2f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Smartphone,
+                                        contentDescription = null,
+                                        tint = Color(0xFFA5B4FC),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Real Device Session Assistant",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        text = "Launches official app, tracks duration & monitors safety",
+                                        fontSize = 11.sp,
+                                        color = TextSecondary
+                                    )
+                                }
+                            }
+
+                            // Running pulse indicator
+                            if (isRunningThisAccount) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(StatusGreen.copy(alpha = 0.2f))
+                                        .border(1.dp, StatusGreen, RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "LIVE SESSION",
+                                        color = StatusGreen,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                }
+                            }
                         }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "AccessibilityService Dispatcher",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                            Text(
-                                text = "Organic Bézier gestures, human reaction rolls, and automatic safety trap aborts on warning.",
-                                fontSize = 11.sp,
-                                color = TextSecondary,
-                                lineHeight = 16.sp
-                            )
+
+                        // Platform Selector Tabs
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Platform.entries.forEach { p ->
+                                val isSelected = selectedPlatform == p
+                                val count = accounts.count { it.platform == p }
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (isSelected) Color(p.hexColor).copy(alpha = 0.25f) else Color(0xFF0F172A)
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (isSelected) Color(p.hexColor) else DarkSurfaceVariant,
+                                            RoundedCornerShape(10.dp)
+                                        )
+                                        .clickable {
+                                            selectedPlatform = p
+                                            val firstAcc = accounts.firstOrNull { it.platform == p }
+                                            if (firstAcc != null) {
+                                                selectedAccountId = firstAcc.id
+                                            }
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "${p.displayName} ($count)",
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) Color.White else TextSecondary
+                                    )
+                                }
+                            }
                         }
+
+                        // Account Selector Dropdown / Selection
+                        if (platformAccounts.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(DarkSurfaceVariant)
+                                    .padding(12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No ${selectedPlatform.displayName} accounts tracked yet. Add one from the Dashboard.",
+                                    color = TextMuted,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        } else {
+                            var accountDropdownExpanded by remember { mutableStateOf(false) }
+
+                            ExposedDropdownMenuBox(
+                                expanded = accountDropdownExpanded,
+                                onExpandedChange = { accountDropdownExpanded = it },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = selectedAccount?.let { "${it.username} ${if (it.isConnected) "(Connected)" else "(Tracked)"}" } ?: "Select Account",
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("Active Warmup Account", fontSize = 11.sp) },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = accountDropdownExpanded) },
+                                    modifier = Modifier
+                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                        .fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = Color(0xFF020617),
+                                        unfocusedContainerColor = Color(0xFF020617),
+                                        focusedBorderColor = Color(0xFF6366F1),
+                                        unfocusedBorderColor = DarkSurfaceVariant,
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+
+                                ExposedDropdownMenu(
+                                    expanded = accountDropdownExpanded,
+                                    onDismissRequest = { accountDropdownExpanded = false },
+                                    modifier = Modifier.background(DarkSurfaceVariant)
+                                ) {
+                                    platformAccounts.forEach { acc ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(acc.username, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                                    Text(
+                                                        if (acc.isConnected) "Connected" else "Tracked",
+                                                        fontSize = 11.sp,
+                                                        color = if (acc.isConnected) StatusGreen else TextMuted
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                selectedAccountId = acc.id
+                                                accountDropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Selected Account Details & Real Session Live Status
+                        selectedAccount?.let { acc ->
+                            val calc = selectedCalculation
+                            val targetMins = acc.targetDailyMinutes
+                            val todayMins = calc?.todayMinutes ?: 0
+                            val sessionElapsedMins = if (isRunningThisAccount) elapsedSeconds / 60 else 0
+                            val totalEffectiveToday = todayMins + sessionElapsedMins
+                            val remainingMins = (targetMins - totalEffectiveToday).coerceAtLeast(0)
+                            val isTargetMet = totalEffectiveToday >= targetMins
+
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF020617)),
+                                border = CardDefaults.outlinedCardBorder()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    // Row 1: Platform & Connection Status
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = acc.platform.displayName,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(acc.platform.hexColor)
+                                            )
+                                            Text("•", color = TextMuted)
+                                            Text(
+                                                text = acc.username,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = TextPrimary
+                                            )
+                                        }
+
+                                        // Connection Badge
+                                        if (acc.isConnected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(StatusGreen.copy(alpha = 0.2f))
+                                                    .border(1.dp, StatusGreen.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(10.dp))
+                                                    Text("CONNECTED", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = StatusGreen)
+                                                }
+                                            }
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(Color(0xFF334155).copy(alpha = 0.6f))
+                                                    .border(1.dp, Color(0xFF64748B).copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                                    .clickable {
+                                                        onUpdateAccount(acc.copy(isConnected = true))
+                                                        Toast.makeText(context, "${acc.username} marked as Connected", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Text("TRACKED (Tap to Connect)", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+                                            }
+                                        }
+                                    }
+
+                                    // Row 2: Live Metrics Grid
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Elapsed Session Timer
+                                        Card(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = if (isRunningThisAccount) Color(0xFF1E1B4B) else Color(0xFF0F172A)
+                                            )
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(8.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                val mins = if (isRunningThisAccount) elapsedSeconds / 60 else 0
+                                                val secs = if (isRunningThisAccount) elapsedSeconds % 60 else 0
+                                                Text(
+                                                    text = String.format(Locale.US, "%02d:%02d", mins, secs),
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontWeight = FontWeight.Black,
+                                                    fontSize = 16.sp,
+                                                    color = if (isRunningThisAccount) Color(0xFF818CF8) else TextMuted
+                                                )
+                                                Text("Session Elapsed", fontSize = 9.sp, color = TextSecondary)
+                                            }
+                                        }
+
+                                        // Today's Target
+                                        Card(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(8.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Text(
+                                                    text = "${targetMins}m",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 16.sp,
+                                                    color = Color.White
+                                                )
+                                                Text("Daily Target", fontSize = 9.sp, color = TextSecondary)
+                                            }
+                                        }
+
+                                        // Today's Completed
+                                        Card(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(8.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Text(
+                                                    text = "${totalEffectiveToday}m",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 16.sp,
+                                                    color = if (isTargetMet) StatusGreen else Color(0xFF38BDF8)
+                                                )
+                                                Text("Completed", fontSize = 9.sp, color = TextSecondary)
+                                            }
+                                        }
+
+                                        // Remaining
+                                        Card(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(8.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Text(
+                                                    text = if (isTargetMet) "DONE" else "${remainingMins}m",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 16.sp,
+                                                    color = if (isTargetMet) StatusGreen else Color(0xFFFBBF24)
+                                                )
+                                                Text("Remaining", fontSize = 9.sp, color = TextSecondary)
+                                            }
+                                        }
+                                    }
+
+                                    // Row 3: Safety Monitor Status Pill
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                if (safetyHaltedState != null)
+                                                    Color(0xFF881337).copy(alpha = 0.4f)
+                                                else if (isRunningThisAccount)
+                                                    Color(0xFF065F46).copy(alpha = 0.3f)
+                                                else
+                                                    Color(0xFF1E293B).copy(alpha = 0.5f)
+                                            )
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (safetyHaltedState != null) Icons.Default.Warning else Icons.Default.Shield,
+                                                contentDescription = null,
+                                                tint = if (safetyHaltedState != null) Color(0xFFFDA4AF) else if (isRunningThisAccount) StatusGreen else Color(0xFFA5B4FC),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = if (safetyHaltedState != null)
+                                                    "Safety Trigger Tripped: $safetyHaltedState"
+                                                else if (isRunningThisAccount)
+                                                    "Safety Monitor: Active & Guarding (Read-Only)"
+                                                else
+                                                    "Safety Monitor: Ready (Read-Only Guard)",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (safetyHaltedState != null) Color(0xFFFECDD3) else if (isRunningThisAccount) StatusGreen else TextSecondary,
+                                                maxLines = 1
+                                            )
+                                        }
+
+                                        if (safetyHaltedState != null) {
+                                            Text(
+                                                text = "Reset",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFFDA4AF),
+                                                modifier = Modifier.clickable {
+                                                    AssistMonitorService.resetSafetyHalt()
+                                                }
+                                            )
+                                        }
+                                    }
+
+                                    // Target Reached Alert Banner
+                                    if (isTargetMet) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(StatusGreen.copy(alpha = 0.15f))
+                                                .border(1.dp, StatusGreen.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                                .padding(8.dp)
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(16.dp))
+                                                Text(
+                                                    text = "★ Daily target of ${targetMins}m reached today! Warmup streak preserved.",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = StatusGreen
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Row 4: Action Buttons [Open Platform] [Start Session] [Stop Session]
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // [Open Platform]
+                                        OutlinedButton(
+                                            onClick = {
+                                                PlatformLauncher.openPlatform(context, acc.platform, acc.username)
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Open ${acc.platform.displayName}", fontSize = 11.sp)
+                                        }
+
+                                        if (isRunningThisAccount) {
+                                            // [Stop Session]
+                                            Button(
+                                                onClick = onStopRealSession,
+                                                modifier = Modifier.weight(1f),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Stop Session", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        } else {
+                                            // [Start Session]
+                                            Button(
+                                                onClick = {
+                                                    onStartRealSession(acc)
+                                                    // Open official platform app immediately
+                                                    PlatformLauncher.openPlatform(context, acc.platform, acc.username)
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Start Session", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Divider / Section Title for Simulation & Mathematical Modeling
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Behavioral Simulator & Live Forecast",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = TextPrimary
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFF334155))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "LOCAL MODEL ONLY",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF94A3B8)
+                        )
                     }
                 }
             }
@@ -406,10 +943,10 @@ fun AssistEngineScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Color(0xFF0F172A)
-                    ),
-                    border = CardDefaults.outlinedCardBorder().copy(brush = Brush.horizontalGradient(listOf(Color(0xFF38BDF8), Color(0xFF6366F1))))
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = Brush.horizontalGradient(listOf(Color(0xFF38BDF8), Color(0xFF6366F1)))
+                    )
                 ) {
                     Column(
                         modifier = Modifier.padding(16.dp),
@@ -431,7 +968,7 @@ fun AssistEngineScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = "LIVE 20-MINUTE SESSION FORECAST",
+                                    text = "LIVE 20-MIN SESSION FORECAST (FROM SLIDERS)",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color(0xFF38BDF8),
@@ -483,7 +1020,7 @@ fun AssistEngineScreen(
                 }
             }
 
-            // Real-Time Behavioral Simulator
+            // Real-Time Behavioral Simulator (Isolated local preview)
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -495,27 +1032,19 @@ fun AssistEngineScreen(
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = "Real-Time Behavioral Simulator",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextPrimary
-                                )
-                                Text(
-                                    text = "Watch the Human Behavior Engine roll reactions and dispatch curves",
-                                    fontSize = 11.sp,
-                                    color = TextSecondary
-                                )
-                            }
-                        }
+                        Text(
+                            text = "Real-Time Behavioral Simulator (Read-Only Preview)",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = "Simulates reaction distributions, Bézier swipe kinetics, and quiet gap rules locally.",
+                            fontSize = 11.sp,
+                            color = TextSecondary
+                        )
 
-                        // Simulation control buttons
+                        // Simulator controls
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -528,7 +1057,7 @@ fun AssistEngineScreen(
                                     }
                                     if (!isSimulatorRunning) {
                                         isSimulatorRunning = true
-                                        triggerNextVideo()
+                                        triggerNextSimVideo()
                                     } else {
                                         isSimulatorRunning = false
                                     }
@@ -566,9 +1095,7 @@ fun AssistEngineScreen(
                                         type = LogType.ALERT
                                     ))
                                 },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF881337)
-                                ),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF881337)),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Icon(
@@ -587,7 +1114,7 @@ fun AssistEngineScreen(
                             }
                         }
 
-                        // Emergency Safety Halt Banner if tripped
+                        // Emergency Safety Alert Banner if tripped
                         simSafetyHalted?.let { reason ->
                             Box(
                                 modifier = Modifier
@@ -616,7 +1143,7 @@ fun AssistEngineScreen(
                                         )
                                     }
                                     Text(
-                                        text = "$reason All gestures terminated immediately to protect account standing. Complete verification manually on your device.",
+                                        text = "$reason Session terminated immediately to protect account standing. Complete verification manually on your device.",
                                         fontSize = 11.sp,
                                         color = TextPrimary,
                                         lineHeight = 15.sp
@@ -663,14 +1190,14 @@ fun AssistEngineScreen(
                                             modifier = Modifier.size(14.dp)
                                         )
                                         Text(
-                                            text = "Video #$simVideoIndex",
+                                            text = "Sim Video #$simVideoIndex",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp,
                                             color = TextPrimary
                                         )
                                     }
                                     Text(
-                                        text = "Target: TikTok / Reels",
+                                        text = "Target: ${selectedPlatform.displayName}",
                                         fontSize = 10.sp,
                                         color = TextMuted
                                     )
@@ -729,7 +1256,7 @@ fun AssistEngineScreen(
                                 }
 
                                 Text(
-                                    text = "Kinetics: $simSwipeTrajectory",
+                                    text = "Trajectory: $simSwipeTrajectory",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 10.sp,
                                     color = TextMuted,
@@ -758,7 +1285,7 @@ fun AssistEngineScreen(
                                         color = TextPrimary
                                     )
                                     Text(
-                                        text = "Session: $simLikesInSession likes • $simSavesInSession saves",
+                                        text = "Sim Session: $simLikesInSession likes • $simSavesInSession saves",
                                         fontSize = 10.sp,
                                         color = TextSecondary
                                     )
@@ -1111,18 +1638,18 @@ fun AssistEngineScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = if (WarmUpAccessibilityService.isServiceConnected)
-                                    "Accessibility Service Active"
+                                    "Accessibility Safety Guard Active"
                                 else
-                                    "Accessibility Service Required",
+                                    "Accessibility Guard Permission Needed",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
                                 color = TextPrimary
                             )
                             Text(
                                 text = if (WarmUpAccessibilityService.isServiceConnected)
-                                    "System service is ready for human gesture dispatching."
+                                    "Read-only screen observer is watching for captchas and warnings."
                                 else
-                                    "Enable WarmUp Manager in Android Settings -> Accessibility.",
+                                    "Enable WarmUp Manager in Android Settings -> Accessibility for automatic safety stop.",
                                 fontSize = 10.sp,
                                 color = TextSecondary
                             )

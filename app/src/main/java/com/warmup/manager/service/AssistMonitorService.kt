@@ -35,9 +35,12 @@ class AssistMonitorService : Service() {
          * and notifies the user.
          */
         fun stopForWarning(reason: String = "Platform warning or captcha triggered") {
+            if (_safetyHaltedReason.value == reason && !isMonitoring) return
             _safetyHaltedReason.value = reason
             isMonitoring = false
-            WarmUpAccessibilityService.stopForWarning(reason)
+            if (WarmUpAccessibilityService.lastDetectedWarning != reason) {
+                WarmUpAccessibilityService.stopForWarning(reason)
+            }
         }
 
         fun resetSafetyHalt() {

@@ -5,6 +5,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.warmup.manager.data.model.AssistSettings
 import com.warmup.manager.data.model.SessionMood
 import com.warmup.manager.data.model.VideoReaction
+import java.util.Locale
 import kotlin.random.Random
 
 object HumanBehaviorEngine {
@@ -165,21 +166,49 @@ object HumanBehaviorEngine {
     }
 
     /**
-     * Scans accessibility tree for Captchas, "Action Blocked", "Try Again Later", or warnings
+     * Scans accessibility tree for Captchas, "Action Blocked", "Try Again Later", "Login Required" or restriction warnings.
+     * READ-ONLY inspection to detect safety barriers.
      */
     fun detectSafetyBlockTrigger(rootNode: AccessibilityNodeInfo?): SafetyBlockResult {
         if (rootNode == null) return SafetyBlockResult.CLEAN
 
         val warningPatterns = listOf(
+            // 1. CAPTCHA
             "captcha",
             "verify you're human",
             "slide to complete",
+            "puzzle",
+            "drag the slider",
+            "not a robot",
+            "security verification",
+            // 2. Login required
+            "login required",
+            "please log in",
+            "log in to continue",
+            "session expired",
+            "sign in required",
+            "logged out",
+            // 3. Action blocked
             "action blocked",
+            "temporarily blocked",
+            "action restricted",
+            "feature unavailable",
+            // 4. Try again later
             "try again later",
             "we limit how often",
+            "wait a few minutes",
+            "too many attempts",
+            // 5. Warning/restriction screens
+            "account restricted",
+            "warning screen",
             "unusual activity",
             "suspicious login",
-            "confirm your identity"
+            "confirm your identity",
+            "security check",
+            "community guidelines",
+            "protect our community",
+            "temporarily locked",
+            "verification required"
         )
 
         for (pattern in warningPatterns) {
@@ -190,6 +219,29 @@ object HumanBehaviorEngine {
                     reason = "Platform safety alert triggered: '$pattern' detected on screen."
                 )
             }
+        }
+
+        // Secondary recursive scan on text & contentDescription for exact or partial matches
+        var detectedReason: String? = null
+        fun scanNode(node: AccessibilityNodeInfo?) {
+            if (node == null || detectedReason != null) return
+            val nodeText = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
+            val contentDesc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+            for (pattern in warningPatterns) {
+                if (nodeText.contains(pattern) || contentDesc.contains(pattern)) {
+                    detectedReason = "Platform safety alert triggered: '$pattern' detected on screen."
+                    return
+                }
+            }
+            for (i in 0 until node.childCount) {
+                scanNode(node.getChild(i))
+                if (detectedReason != null) return
+            }
+        }
+        scanNode(rootNode)
+
+        if (detectedReason != null) {
+            return SafetyBlockResult(isBlocked = true, reason = detectedReason!!)
         }
 
         return SafetyBlockResult.CLEAN

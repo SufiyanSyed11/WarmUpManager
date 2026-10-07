@@ -1,6 +1,8 @@
 package com.warmup.manager.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,10 +22,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -36,11 +44,12 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -55,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -65,9 +75,11 @@ import com.warmup.manager.ui.components.StatusBadge
 import com.warmup.manager.ui.theme.DarkBackground
 import com.warmup.manager.ui.theme.DarkSurface
 import com.warmup.manager.ui.theme.DarkSurfaceVariant
+import com.warmup.manager.ui.theme.StatusGreen
 import com.warmup.manager.ui.theme.TextMuted
 import com.warmup.manager.ui.theme.TextPrimary
 import com.warmup.manager.ui.theme.TextSecondary
+import com.warmup.manager.util.PlatformLauncher
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -79,13 +91,16 @@ fun AccountListScreen(
     calculations: List<AccountWarmUpCalculation>,
     onBack: () -> Unit,
     onSelectAccount: (Long) -> Unit,
+    onStartSession: (AccountEntity) -> Unit = {},
     onAddAccount: (AccountEntity) -> Unit,
     onUpdateAccount: (AccountEntity) -> Unit,
     onDeleteAccount: (AccountEntity) -> Unit
 ) {
+    val context = LocalContext.current
     var showAddEditDialog by remember { mutableStateOf(false) }
     var accountToEdit by remember { mutableStateOf<AccountEntity?>(null) }
     var accountToDelete by remember { mutableStateOf<AccountEntity?>(null) }
+    var accountToConnect by remember { mutableStateOf<AccountEntity?>(null) }
 
     Scaffold(
         containerColor = DarkBackground,
@@ -100,7 +115,7 @@ fun AccountListScreen(
                             color = TextPrimary
                         )
                         Text(
-                            text = "${calculations.size} total accounts",
+                            text = "${calculations.size} total accounts • ${calculations.count { it.account.isConnected }} connected",
                             fontSize = 11.sp,
                             color = TextSecondary
                         )
@@ -172,6 +187,19 @@ fun AccountListScreen(
                         },
                         onDelete = {
                             accountToDelete = calc.account
+                        },
+                        onConnect = {
+                            accountToConnect = calc.account
+                        },
+                        onDisconnect = {
+                            onUpdateAccount(calc.account.copy(isConnected = false))
+                            Toast.makeText(context, "${calc.account.username} marked as Tracked", Toast.LENGTH_SHORT).show()
+                        },
+                        onOpenPlatform = {
+                            PlatformLauncher.openPlatform(context, calc.account.platform, calc.account.username)
+                        },
+                        onStartSession = {
+                            onStartSession(calc.account)
                         }
                     )
                 }
@@ -192,6 +220,77 @@ fun AccountListScreen(
                 }
                 showAddEditDialog = false
             }
+        )
+    }
+
+    // Connect Account Dialog
+    accountToConnect?.let { acc ->
+        AlertDialog(
+            onDismissRequest = { accountToConnect = null },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = null,
+                        tint = Color(acc.platform.hexColor)
+                    )
+                    Text("Connect ${acc.username}", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Security Guarantee:",
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = "WarmUp Manager never requests, intercepts, or stores your social media passwords or credentials.",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    Text(
+                        text = "To connect, verify on your device that you are actively logged into ${acc.username} in official ${acc.platform.displayName}.",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            PlatformLauncher.openPlatform(context, acc.platform, acc.username)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Open ${acc.platform.displayName} to Verify Profile", fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onUpdateAccount(acc.copy(isConnected = true))
+                        Toast.makeText(context, "${acc.username} connected successfully", Toast.LENGTH_SHORT).show()
+                        accountToConnect = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = StatusGreen)
+                ) {
+                    Text("Confirm Connected")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { accountToConnect = null }) {
+                    Text("Keep Tracked", color = TextSecondary)
+                }
+            },
+            containerColor = DarkSurface
         )
     }
 
@@ -232,7 +331,11 @@ fun AccountRowCard(
     calc: AccountWarmUpCalculation,
     onClick: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onOpenPlatform: () -> Unit,
+    onStartSession: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
@@ -248,21 +351,64 @@ fun AccountRowCard(
         colors = CardDefaults.cardColors(containerColor = DarkSurface)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
+            // Header: Username, Badges, and Overflow menu
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = calc.account.username,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = TextPrimary
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = calc.account.username,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = TextPrimary
+                        )
+
+                        // Clear Connection Status Badge
+                        if (calc.account.isConnected) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(StatusGreen.copy(alpha = 0.2f))
+                                    .border(1.dp, StatusGreen.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(10.dp))
+                                    Text(
+                                        text = "CONNECTED",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = StatusGreen
+                                    )
+                                }
+                            }
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFF334155).copy(alpha = 0.6f))
+                                    .border(1.dp, Color(0xFF64748B).copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "TRACKED",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Added $dateAddedString",
+                        text = "Added $dateAddedString • ${calc.account.platform.displayName}",
                         fontSize = 11.sp,
                         color = TextMuted
                     )
@@ -285,8 +431,27 @@ fun AccountRowCard(
                         onDismissRequest = { menuExpanded = false },
                         modifier = Modifier.background(DarkSurfaceVariant)
                     ) {
+                        if (calc.account.isConnected) {
+                            DropdownMenuItem(
+                                text = { Text("Disconnect Account", color = TextSecondary) },
+                                leadingIcon = { Icon(Icons.Default.LinkOff, contentDescription = null, tint = TextSecondary) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onDisconnect()
+                                }
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text("Connect Account", color = StatusGreen) },
+                                leadingIcon = { Icon(Icons.Default.Link, contentDescription = null, tint = StatusGreen) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onConnect()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
-                            text = { Text("Edit Account", color = TextPrimary) },
+                            text = { Text("Edit Details", color = TextPrimary) },
                             leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = TextSecondary) },
                             onClick = {
                                 menuExpanded = false
@@ -331,6 +496,60 @@ fun AccountRowCard(
                 status = calc.status,
                 showProgressBar = true
             )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Action Buttons Row (Differentiating Tracked vs Connected)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!calc.account.isConnected) {
+                    // TRACKED ACCOUNT ACTIONS: [Connect Account] [Open Platform]
+                    Button(
+                        onClick = onConnect,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4F46E5)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Connect Account", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = onOpenPlatform,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Open ${calc.account.platform.displayName}", fontSize = 11.sp)
+                    }
+                } else {
+                    // CONNECTED ACCOUNT ACTIONS: [Open Platform] [Start Session]
+                    OutlinedButton(
+                        onClick = onOpenPlatform,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Open ${calc.account.platform.displayName}", fontSize = 11.sp)
+                    }
+
+                    Button(
+                        onClick = onStartSession,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(calc.account.platform.hexColor)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Start Session", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
     }
 }
@@ -347,6 +566,7 @@ fun AddEditAccountDialog(
     var notes by remember { mutableStateOf(existingAccount?.notes ?: "") }
     var targetMinutes by remember { mutableIntStateOf(existingAccount?.targetDailyMinutes ?: 30) }
     var targetDays by remember { mutableIntStateOf(existingAccount?.targetDays ?: 5) }
+    var isConnected by remember { mutableStateOf(existingAccount?.isConnected ?: false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -478,6 +698,30 @@ fun AddEditAccountDialog(
                         }
                     }
                 }
+
+                // Connection status toggle
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(DarkSurfaceVariant)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Connected on Device", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text("Logged into ${platform.displayName} on this phone", fontSize = 10.sp, color = TextMuted)
+                    }
+                    Switch(
+                        checked = isConnected,
+                        onCheckedChange = { isConnected = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = StatusGreen
+                        )
+                    )
+                }
             }
         },
         confirmButton = {
@@ -493,7 +737,8 @@ fun AddEditAccountDialog(
                         nicheTag = nicheTag,
                         notes = notes,
                         targetDailyMinutes = targetMinutes,
-                        targetDays = targetDays
+                        targetDays = targetDays,
+                        isConnected = isConnected
                     )
                     onConfirm(updated)
                 },

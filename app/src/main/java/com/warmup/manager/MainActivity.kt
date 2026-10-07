@@ -70,16 +70,88 @@ fun WarmUpNavHost(
     var timerSaves by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
     var timerStartMillis by androidx.compose.runtime.remember { androidx.compose.runtime.mutableLongStateOf(0L) }
 
+    fun dispatchTargetReachedNotification(username: String, targetMins: Int) {
+        val nm = activity.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                "warmup_target_channel",
+                "WarmUp Targets",
+                android.app.NotificationManager.IMPORTANCE_HIGH
+            )
+            nm.createNotificationChannel(channel)
+        }
+        val notif = androidx.core.app.NotificationCompat.Builder(activity, "warmup_target_channel")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("★ WarmUp Daily Target Reached!")
+            .setContentText("$username reached today's target of ${targetMins}m! Streak preserved.")
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(3002, notif)
+    }
+
+    fun stopAndSaveActiveSession(warningReason: String? = null) {
+        val acc = activeTimerAccount
+        if (acc != null) {
+            val durationMins = (elapsedSeconds / 60).coerceAtLeast(if (elapsedSeconds >= 20) 1 else 0)
+            if (durationMins > 0) {
+                val now = System.currentTimeMillis()
+                val dateStr = java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+                scope.launch(Dispatchers.IO) {
+                    repository.insertSession(
+                        com.warmup.manager.data.model.WarmUpSessionEntity(
+                            accountId = acc.id,
+                            startTime = timerStartMillis,
+                            endTime = now,
+                            durationMinutes = durationMins,
+                            likesCount = timerLikes,
+                            savesCount = timerSaves,
+                            dateString = dateStr,
+                            warningReason = warningReason
+                        )
+                    )
+                }
+                if (warningReason != null) {
+                    Toast.makeText(activity, "Session halted: $warningReason", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(activity, "Saved ${durationMins}m warmup session for ${acc.username}!", Toast.LENGTH_LONG).show()
+                }
+            }
+            com.warmup.manager.service.FloatingTimerService.stop(activity)
+            com.warmup.manager.service.WarmUpAccessibilityService.stopSession(warningReason ?: "Manual stop")
+            activeTimerAccount = null
+        }
+    }
+
     // Ticker when timer is active
     androidx.compose.runtime.LaunchedEffect(activeTimerAccount) {
-        if (activeTimerAccount != null) {
+        val acc = activeTimerAccount
+        if (acc != null) {
             elapsedSeconds = 0
             timerLikes = 0
             timerSaves = 0
             timerStartMillis = System.currentTimeMillis()
+            var hasNotifiedTargetReached = false
+
             while (activeTimerAccount != null) {
                 kotlinx.coroutines.delay(1000L)
                 elapsedSeconds++
+
+                if (!hasNotifiedTargetReached && (elapsedSeconds / 60) >= acc.targetDailyMinutes) {
+                    hasNotifiedTargetReached = true
+                    dispatchTargetReachedNotification(acc.username, acc.targetDailyMinutes)
+                    Toast.makeText(activity, "★ Daily target of ${acc.targetDailyMinutes}m reached for ${acc.username}!", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    // Auto-stop active session when safety monitor trips
+    val safetyHaltedState by com.warmup.manager.service.AssistMonitorService.safetyHaltedReason.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(safetyHaltedState) {
+        safetyHaltedState?.let { reason ->
+            if (activeTimerAccount != null) {
+                stopAndSaveActiveSession(warningReason = reason)
             }
         }
     }
@@ -126,9 +198,40 @@ fun WarmUpNavHost(
                 )
             }
 
-            // STAGE 3 ASSIST ENGINE SCREEN (LIVE SIMULATOR & TELEMETRY)
+            // STAGE 3 ASSIST ENGINE SCREEN (REAL SESSION CONTROLLER + SIMULATOR & TELEMETRY)
             composable("assist") {
                 AssistEngineScreen(
+                    accounts = allAccounts,
+                    calculations = allCalculations,
+                    activeTimerAccount = activeTimerAccount,
+                    elapsedSeconds = elapsedSeconds,
+                    onStartRealSession = { acc ->
+                        activeTimerAccount = acc
+                        timerStartMillis = System.currentTimeMillis()
+                        elapsedSeconds = 0
+                        com.warmup.manager.service.FloatingTimerService.start(
+                            context = activity,
+                            accountId = acc.id,
+                            username = acc.username,
+                            targetMins = acc.targetDailyMinutes,
+                            platform = acc.platform.name
+                        )
+                        com.warmup.manager.service.WarmUpAccessibilityService.startSession(
+                            accountId = acc.id,
+                            username = acc.username,
+                            platform = acc.platform,
+                            targetMinutes = acc.targetDailyMinutes
+                        )
+                        Toast.makeText(activity, "Started live session for ${acc.username}", Toast.LENGTH_SHORT).show()
+                    },
+                    onStopRealSession = {
+                        stopAndSaveActiveSession()
+                    },
+                    onUpdateAccount = { acc ->
+                        scope.launch(Dispatchers.IO) {
+                            repository.updateAccount(acc)
+                        }
+                    },
                     currentSettings = assistSettings,
                     onSaveSettings = { updated ->
                         assistSettings = updated
@@ -166,6 +269,26 @@ fun WarmUpNavHost(
                     onSelectAccount = { accountId ->
                         navController.navigate("account/$accountId")
                     },
+                    onStartSession = { acc ->
+                        activeTimerAccount = acc
+                        timerStartMillis = System.currentTimeMillis()
+                        elapsedSeconds = 0
+                        com.warmup.manager.util.PlatformLauncher.openPlatform(activity, acc.platform, acc.username)
+                        com.warmup.manager.service.FloatingTimerService.start(
+                            context = activity,
+                            accountId = acc.id,
+                            username = acc.username,
+                            targetMins = acc.targetDailyMinutes,
+                            platform = acc.platform.name
+                        )
+                        com.warmup.manager.service.WarmUpAccessibilityService.startSession(
+                            accountId = acc.id,
+                            username = acc.username,
+                            platform = acc.platform,
+                            targetMinutes = acc.targetDailyMinutes
+                        )
+                        Toast.makeText(activity, "Started warmup session for ${acc.username}", Toast.LENGTH_SHORT).show()
+                    },
                     onAddAccount = { account ->
                         scope.launch(Dispatchers.IO) {
                             repository.insertAccount(account)
@@ -201,7 +324,13 @@ fun WarmUpNavHost(
                         onBack = { navController.popBackStack() },
                         onStartTimer = {
                             activeTimerAccount = calc.account
+                            com.warmup.manager.util.PlatformLauncher.openPlatform(activity, calc.account.platform, calc.account.username)
                             Toast.makeText(activity, "Timer running for ${calc.account.username}", Toast.LENGTH_SHORT).show()
+                        },
+                        onUpdateAccount = { updatedAcc ->
+                            scope.launch(Dispatchers.IO) {
+                                repository.updateAccount(updatedAcc)
+                            }
                         },
                         onAddSession = { session ->
                             scope.launch(Dispatchers.IO) {

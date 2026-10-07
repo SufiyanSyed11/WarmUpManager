@@ -1,22 +1,14 @@
 package com.warmup.manager.service
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
-import android.content.Intent
-import android.graphics.Path
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.util.DisplayMetrics
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
-import com.warmup.manager.MainActivity
 import com.warmup.manager.WarmUpApp
-import com.warmup.manager.data.model.AssistSettings
-import com.warmup.manager.data.model.VideoReaction
+import com.warmup.manager.data.model.Platform
 import com.warmup.manager.data.model.WarmUpSessionEntity
 import com.warmup.manager.engine.HumanBehaviorEngine
 import kotlinx.coroutines.CoroutineScope
@@ -25,30 +17,34 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import kotlin.random.Random
 
+/**
+ * READ-ONLY Accessibility Safety Monitor.
+ *
+ * Adheres strictly to security requirements:
+ * - NEVER performs automated gestures, swipes, likes, or bot actions.
+ * - ONLY passively observes screen accessibility text in supported apps (TikTok, Instagram, YouTube)
+ *   to detect safety barriers (CAPTCHAs, Login Required, Action Blocked, Try Again Later, Restrictions).
+ * - When a safety trigger is identified, immediately halts the active WarmUp Manager session,
+ *   logs the warning, and alerts the user.
+ * - NEVER dismisses, bypasses, or interacts with the warning screen.
+ */
 class WarmUpAccessibilityService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val handler = Handler(Looper.getMainLooper())
 
-    private var isAssistRunning = false
+    private var isSessionActive = false
     private var activeAccountId: Long = 0
-    private var activeAccountUsername: String = ""
-    private var settings = AssistSettings()
-
-    private var screenWidth = 1080
-    private var screenHeight = 2400
-
-    private var sessionStartTime = 0L
-    private var videosWatchedCount = 0
-    private var videosSinceLastAction = 0
-    private var likesDoneCount = 0
-    private var savesDoneCount = 0
+    private var activeUsername: String = ""
+    private var activePlatform: Platform = Platform.TIKTOK
+    private var targetDailyMinutes: Int = 30
+    private var sessionStartTime: Long = 0
 
     companion object {
         const val ALERT_CHANNEL_ID = "warmup_safety_alert_channel"
         const val ALERT_NOTIFICATION_ID = 3001
+        const val TARGET_CHANNEL_ID = "warmup_target_channel"
+        const val TARGET_NOTIFICATION_ID = 3002
 
         var isServiceConnected = false
             private set
@@ -56,11 +52,21 @@ class WarmUpAccessibilityService : AccessibilityService() {
         var instance: WarmUpAccessibilityService? = null
             private set
 
-        /**
-         * Stops active assist session and fires emergency safety alert
-         */
+        var lastDetectedWarning: String? = null
+            private set
+
         fun stopForWarning(reason: String = "Platform safety alert triggered") {
-            instance?.stopForWarning(reason)
+            if (lastDetectedWarning == reason && instance?.isSessionActive == false) return
+            lastDetectedWarning = reason
+            instance?.triggerEmergencySafetyHalt(reason)
+        }
+
+        fun startSession(accountId: Long, username: String, platform: Platform, targetMinutes: Int) {
+            instance?.startObservingSession(accountId, username, platform, targetMinutes)
+        }
+
+        fun stopSession(reason: String = "User ended session") {
+            instance?.stopObservingSession(reason)
         }
     }
 
@@ -68,16 +74,12 @@ class WarmUpAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         isServiceConnected = true
         instance = this
-
-        val displayMetrics: DisplayMetrics = resources.displayMetrics
-        screenWidth = displayMetrics.widthPixels
-        screenHeight = displayMetrics.heightPixels
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!isAssistRunning) return
-
+        val rootNode = rootInActiveWindow ?: return
         val pkg = event?.packageName?.toString() ?: return
+
         val targetPackages = listOf(
             "com.zhiliaoapp.musically",      // TikTok
             "com.ss.android.ugc.trill",     // TikTok Global
@@ -86,19 +88,19 @@ class WarmUpAccessibilityService : AccessibilityService() {
         )
 
         if (targetPackages.none { pkg.contains(it) }) {
-            // Not currently in target app, idle until user switches to social app
             return
         }
 
-        // Safety verification: check for captcha or action blocked dialogs
-        val safetyCheck = HumanBehaviorEngine.detectSafetyBlockTrigger(rootInActiveWindow)
+        // Read-only inspection of active window for security barriers
+        val safetyCheck = HumanBehaviorEngine.detectSafetyBlockTrigger(rootNode)
         if (safetyCheck.isBlocked) {
+            lastDetectedWarning = safetyCheck.reason
             triggerEmergencySafetyHalt(safetyCheck.reason)
         }
     }
 
     override fun onInterrupt() {
-        stopAssistSession(reason = "Interrupted by system")
+        stopObservingSession(reason = "Interrupted by system")
     }
 
     override fun onDestroy() {
@@ -107,36 +109,28 @@ class WarmUpAccessibilityService : AccessibilityService() {
         if (instance == this) {
             instance = null
         }
-        stopAssistSession(reason = "Service destroyed")
+        stopObservingSession(reason = "Service destroyed")
     }
 
-    /**
-     * Halts automated actions due to a safety warning or captcha trigger.
-     */
-    fun stopForWarning(reason: String = "Platform safety alert triggered") {
-        triggerEmergencySafetyHalt(reason)
-    }
-
-    fun startAssistSession(accountId: Long, username: String, assistSettings: AssistSettings) {
-        if (isAssistRunning) return
-        isAssistRunning = true
+    fun startObservingSession(
+        accountId: Long,
+        username: String,
+        platform: Platform,
+        targetMinutes: Int
+    ) {
+        if (isSessionActive) return
+        isSessionActive = true
         activeAccountId = accountId
-        activeAccountUsername = username
-        settings = assistSettings
-
+        activeUsername = username
+        activePlatform = platform
+        targetDailyMinutes = targetMinutes
         sessionStartTime = System.currentTimeMillis()
-        videosWatchedCount = 0
-        videosSinceLastAction = 5
-        likesDoneCount = 0
-        savesDoneCount = 0
-
-        scheduleNextVideoCycle()
+        lastDetectedWarning = null
     }
 
-    fun stopAssistSession(reason: String = "User requested stop") {
-        if (!isAssistRunning) return
-        isAssistRunning = false
-        handler.removeCallbacksAndMessages(null)
+    fun stopObservingSession(reason: String = "Manual stop") {
+        if (!isSessionActive) return
+        isSessionActive = false
 
         val durationMinutes = ((System.currentTimeMillis() - sessionStartTime) / 60000L).toInt()
         if (durationMinutes > 0 && activeAccountId > 0) {
@@ -144,6 +138,7 @@ class WarmUpAccessibilityService : AccessibilityService() {
             val repository = app?.repository
             val dateStr = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
 
+            val isWarning = reason != "Manual stop" && reason != "User ended session" && reason != "Service destroyed"
             serviceScope.launch {
                 repository?.insertSession(
                     WarmUpSessionEntity(
@@ -151,128 +146,28 @@ class WarmUpAccessibilityService : AccessibilityService() {
                         startTime = sessionStartTime,
                         endTime = System.currentTimeMillis(),
                         durationMinutes = durationMinutes,
-                        likesCount = likesDoneCount,
-                        savesCount = savesDoneCount,
-                        dateString = dateStr
+                        likesCount = 0, // Manual human mode: user in control of engagement
+                        savesCount = 0,
+                        dateString = dateStr,
+                        warningReason = if (isWarning) reason else null
                     )
                 )
             }
         }
     }
 
-    private fun scheduleNextVideoCycle() {
-        if (!isAssistRunning) return
-
-        // 1. Roll video reaction
-        val reaction = HumanBehaviorEngine.rollVideoReaction(settings)
-        val watchDuration = HumanBehaviorEngine.calculateWatchDurationMillis(reaction, matchedNiche = false)
-
-        videosWatchedCount++
-        videosSinceLastAction++
-
-        // 2. Schedule actions for this video (Like / Save) during watch time
-        val likeDecision = HumanBehaviorEngine.evaluateLikeDecision(
-            reaction = reaction,
-            settings = settings,
-            videosSinceLastAction = videosSinceLastAction,
-            currentLikesToday = likesDoneCount
-        )
-
-        if (likeDecision.shouldLike) {
-            handler.postDelayed({
-                if (isAssistRunning) {
-                    performLikeGesture(likeDecision.useDoubleTap)
-                    likesDoneCount++
-                    videosSinceLastAction = 0
-
-                    // Should save?
-                    val shouldSave = HumanBehaviorEngine.evaluateSaveDecision(
-                        wasLiked = true,
-                        reaction = reaction,
-                        settings = settings,
-                        currentSavesToday = savesDoneCount
-                    )
-                    if (shouldSave) {
-                        handler.postDelayed({
-                            if (isAssistRunning) {
-                                performSaveGesture()
-                                savesDoneCount++
-                            }
-                        }, Random.nextLong(1200L, 2500L))
-                    }
-                }
-            }, likeDecision.preActionDelayMillis)
-        }
-
-        // 3. After watch duration, perform human curved swipe to next video
-        handler.postDelayed({
-            if (isAssistRunning) {
-                // Occasional human idle pause (3-15 seconds)
-                val extraPause = if (Random.nextFloat() < 0.12f) Random.nextLong(3000L, 12000L) else 0L
-
-                handler.postDelayed({
-                    if (isAssistRunning) {
-                        performHumanSwipeToNextVideo()
-                        // Schedule next cycle
-                        scheduleNextVideoCycle()
-                    }
-                }, extraPause)
-            }
-        }, watchDuration)
-    }
-
-    private fun performHumanSwipeToNextVideo() {
-        val swipe = HumanBehaviorEngine.generateHumanSwipePath(screenWidth, screenHeight, isScrollUp = false)
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(swipe.path, 0, swipe.durationMillis))
-            .build()
-
-        dispatchGesture(gesture, null, null)
-    }
-
-    private fun performLikeGesture(useDoubleTap: Boolean) {
-        val centerX = screenWidth * 0.5f + (Random.nextFloat() * 40f - 20f)
-        val centerY = screenHeight * 0.5f + (Random.nextFloat() * 60f - 30f)
-
-        if (useDoubleTap) {
-            val tapPath1 = Path().apply { moveTo(centerX, centerY) }
-            val tapPath2 = Path().apply { moveTo(centerX + 2f, centerY + 2f) }
-
-            val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(tapPath1, 0, 50))
-                .addStroke(GestureDescription.StrokeDescription(tapPath2, 120, 50))
-                .build()
-
-            dispatchGesture(gesture, null, null)
-        } else {
-            // Heart button tap on right side of screen
-            val heartX = screenWidth * 0.90f
-            val heartY = screenHeight * 0.58f
-            val heartPath = Path().apply { moveTo(heartX, heartY) }
-
-            val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(heartPath, 0, 80))
-                .build()
-
-            dispatchGesture(gesture, null, null)
-        }
-    }
-
-    private fun performSaveGesture() {
-        // Bookmark button tap on right side
-        val saveX = screenWidth * 0.90f
-        val saveY = screenHeight * 0.67f
-        val savePath = Path().apply { moveTo(saveX, saveY) }
-
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(savePath, 0, 80))
-            .build()
-
-        dispatchGesture(gesture, null, null)
+    /**
+     * Halts automated tracking when a safety barrier (Captcha / Block / Restriction) is spotted.
+     */
+    fun stopForWarning(reason: String = "Platform safety alert triggered") {
+        triggerEmergencySafetyHalt(reason)
     }
 
     private fun triggerEmergencySafetyHalt(reason: String) {
-        stopAssistSession(reason = reason)
+        stopObservingSession(reason = reason)
+        if (AssistMonitorService.safetyHaltedReason.value != reason) {
+            AssistMonitorService.stopForWarning(reason)
+        }
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -288,7 +183,10 @@ class WarmUpAccessibilityService : AccessibilityService() {
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle("WarmUp Assist Paused: Safety Alert")
             .setContentText(reason)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(reason + " Automated actions immediately stopped to safeguard your account. Complete any verification manually."))
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("$reason Session monitoring halted immediately. Complete any verification manually in the app.")
+            )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()

@@ -15,5 +15,6 @@ data class AccountEntity(
     val targetDays: Int = 5,          // Default 5 days (suggested 5, option 3-7)
     val streakResetCount: Int = 0,    // tracks streak reset history
     val isExplicitlyWarmedUp: Boolean = false,
+    val isConnected: Boolean = false, // Connection status (Tracked vs Connected)
     val createdAt: Long = System.currentTimeMillis()
 )

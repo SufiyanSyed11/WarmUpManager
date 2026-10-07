@@ -73,6 +73,19 @@ import com.warmup.manager.ui.theme.TextSecondary
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import com.warmup.manager.data.model.AccountEntity
+import com.warmup.manager.util.PlatformLauncher
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountDetailScreen(
@@ -80,12 +93,15 @@ fun AccountDetailScreen(
     sessions: List<WarmUpSessionEntity>,
     onBack: () -> Unit,
     onStartTimer: () -> Unit,
+    onUpdateAccount: (AccountEntity) -> Unit = {},
     onAddSession: (WarmUpSessionEntity) -> Unit,
     onDeleteSession: (WarmUpSessionEntity) -> Unit,
     onContinueStreak: () -> Unit,
     onResetStreak: () -> Unit
 ) {
+    val context = LocalContext.current
     var showAddSessionDialog by remember { mutableStateOf(false) }
+    var showConnectDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = DarkBackground,
@@ -163,7 +179,17 @@ fun AccountDetailScreen(
 
             // Overview Card
             item {
-                AccountHeaderCard(calc = calc)
+                AccountHeaderCard(
+                    calc = calc,
+                    onConnect = { showConnectDialog = true },
+                    onDisconnect = {
+                        onUpdateAccount(calc.account.copy(isConnected = false))
+                        Toast.makeText(context, "${calc.account.username} set to Tracked", Toast.LENGTH_SHORT).show()
+                    },
+                    onOpenPlatform = {
+                        PlatformLauncher.openPlatform(context, calc.account.platform, calc.account.username)
+                    }
+                )
             }
 
             // Stats Quick Row
@@ -237,10 +263,78 @@ fun AccountDetailScreen(
             }
         )
     }
+
+    if (showConnectDialog) {
+        AlertDialog(
+            onDismissRequest = { showConnectDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Shield, contentDescription = null, tint = Color(calc.account.platform.hexColor))
+                    Text("Connect ${calc.account.username}", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 17.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Security Guarantee:",
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = "WarmUp Manager never requests, intercepts, or stores your social media password or credentials.",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    Text(
+                        text = "To connect, verify that ${calc.account.username} is actively logged into the official ${calc.account.platform.displayName} app on this device.",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            PlatformLauncher.openPlatform(context, calc.account.platform, calc.account.username)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Open ${calc.account.platform.displayName} to Verify", fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onUpdateAccount(calc.account.copy(isConnected = true))
+                        Toast.makeText(context, "${calc.account.username} marked as Connected", Toast.LENGTH_SHORT).show()
+                        showConnectDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = StatusGreen)
+                ) {
+                    Text("Confirm Connected")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConnectDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            },
+            containerColor = DarkSurface
+        )
+    }
 }
 
 @Composable
-private fun AccountHeaderCard(calc: AccountWarmUpCalculation) {
+private fun AccountHeaderCard(
+    calc: AccountWarmUpCalculation,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onOpenPlatform: () -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -293,6 +387,68 @@ private fun AccountHeaderCard(calc: AccountWarmUpCalculation) {
                     color = TextMuted,
                     fontSize = 12.sp
                 )
+            }
+
+            // Connection status and action row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                if (calc.account.isConnected) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(StatusGreen.copy(alpha = 0.2f))
+                            .border(1.dp, StatusGreen.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(12.dp))
+                            Text("CONNECTED ACCOUNT", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = StatusGreen)
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFF334155).copy(alpha = 0.6f))
+                            .border(1.dp, Color(0xFF64748B).copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text("TRACKED ACCOUNT", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onOpenPlatform,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Open ${calc.account.platform.displayName}", fontSize = 11.sp)
+                    }
+
+                    if (!calc.account.isConnected) {
+                        Button(
+                            onClick = onConnect,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4F46E5))
+                        ) {
+                            Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Connect", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onDisconnect,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Disconnect", fontSize = 11.sp, color = TextSecondary)
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -468,7 +624,7 @@ private fun SessionItemCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "${session.durationMinutes} minutes session",
                     fontWeight = FontWeight.Medium,
@@ -480,6 +636,27 @@ private fun SessionItemCard(
                     fontSize = 11.sp,
                     color = TextSecondary
                 )
+                if (!session.warningReason.isNullOrBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = "Safety Halt: ${session.warningReason}",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFFCA5A5),
+                            maxLines = 1
+                        )
+                    }
+                }
             }
 
             IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {

@@ -29,5 +29,6 @@ data class WarmUpSessionEntity(
     val durationMinutes: Int,
     val likesCount: Int = 0,
     val savesCount: Int = 0,
-    val dateString: String // "YYYY-MM-DD" local date format
+    val dateString: String, // "YYYY-MM-DD" local date format
+    val warningReason: String? = null
 )

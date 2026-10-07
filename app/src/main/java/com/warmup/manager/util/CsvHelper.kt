@@ -6,12 +6,12 @@ import com.warmup.manager.data.model.Platform
 object CsvHelper {
     fun exportAccountsToCsv(accounts: List<AccountEntity>): String {
         val sb = StringBuilder()
-        sb.append("id,username,platform,nicheTag,notes,targetDailyMinutes,targetDays,isWarmedUp\n")
+        sb.append("id,username,platform,nicheTag,notes,targetDailyMinutes,targetDays,isWarmedUp,isConnected\n")
         accounts.forEach { acc ->
             val escapedUsername = escapeCsv(acc.username)
             val escapedNiche = escapeCsv(acc.nicheTag)
             val escapedNotes = escapeCsv(acc.notes)
-            sb.append("${acc.id},$escapedUsername,${acc.platform.name},$escapedNiche,$escapedNotes,${acc.targetDailyMinutes},${acc.targetDays},${acc.isExplicitlyWarmedUp}\n")
+            sb.append("${acc.id},$escapedUsername,${acc.platform.name},$escapedNiche,$escapedNotes,${acc.targetDailyMinutes},${acc.targetDays},${acc.isExplicitlyWarmedUp},${acc.isConnected}\n")
         }
         return sb.toString()
     }
@@ -37,6 +37,7 @@ object CsvHelper {
                     val targetMinutes = tokens.getOrNull(5)?.toIntOrNull() ?: 30
                     val targetDays = tokens.getOrNull(6)?.toIntOrNull() ?: 5
                     val isWarmed = tokens.getOrNull(7)?.toBooleanStrictOrNull() ?: false
+                    val isConnected = tokens.getOrNull(8)?.toBooleanStrictOrNull() ?: false
 
                     accounts.add(
                         AccountEntity(
@@ -47,7 +48,8 @@ object CsvHelper {
                             notes = notes,
                             targetDailyMinutes = targetMinutes,
                             targetDays = targetDays,
-                            isExplicitlyWarmedUp = isWarmed
+                            isExplicitlyWarmedUp = isWarmed,
+                            isConnected = isConnected
                         )
                     )
                 } catch (_: Exception) {
